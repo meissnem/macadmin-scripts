@@ -232,6 +232,16 @@ def unmountdmg(mountpoint):
 def install_product(dist_path, target_vol):
     '''Install a product to a target volume.
     Returns a boolean to indicate success or failure.'''
+
+    # Work around a very dumb Apple bug in a package postinstall script
+    # that fails to correctly target the Install macOS.app when installed
+    # to a volume other than the current boot volume.
+    #
+    # Please file feedback with Apple!
+    target_vol_app_workaround = target_vol + 'Applications'
+    os.symlink(os.path.join(target_vol, 'Applications'),
+               target_vol_app_workaround)
+
     # set CM_BUILD env var to make Installer bypass eligibilty checks
     # when installing packages (for machine-specific OS builds)
     os.environ["CM_BUILD"] = "CM_BUILD"
@@ -241,25 +251,10 @@ def install_product(dist_path, target_vol):
     except subprocess.CalledProcessError as err:
         print(err, file=sys.stderr)
         return False
-    else:
-        # Apple postinstall script bug ends up copying files to a path like
-        # /tmp/dmg.T9ak1HApplications
-        path = target_vol + 'Applications'
-        if os.path.exists(path):
-            print('*********************************************************')
-            print('*** Working around a very dumb Apple bug in a package ***')
-            print('*** postinstall script that fails to correctly target ***')
-            print('*** the Install macOS.app when installed to a volume  ***')
-            print('*** other than the current boot volume.               ***')
-            print('***       Please file feedback with Apple!            ***')
-            print('*********************************************************')
-            subprocess.check_call(
-                ['/usr/bin/ditto',
-                 path,
-                 os.path.join(target_vol, 'Applications')]
-            )
-            subprocess.check_call(['/bin/rm', '-r', path])
-        return True
+    finally:
+        os.unlink(target_vol_app_workaround)
+
+    return True
 
 class ReplicationError(Exception):
     '''A custom error when replication fails'''
@@ -587,10 +582,13 @@ def main():
               file=sys.stderr)
         exit(-1)
 
+    sort_key = lambda x: (product_info[x].get('version', 'UNKNOWN'),
+                          product_info[x]['PostDate'])
+
     # display a menu of choices (some seed catalogs have multiple installers)
     print('%2s %14s %10s %8s %11s  %s'
           % ('#', 'ProductID', 'Version', 'Build', 'Post Date', 'Title'))
-    for index, product_id in enumerate(product_info):
+    for index, product_id in enumerate(sorted(product_info, key=sort_key)):
         print('%2s %14s %10s %8s %11s  %s' % (
             index + 1,
             product_id,
@@ -606,7 +604,7 @@ def main():
         index = int(answer) - 1
         if index < 0:
             raise ValueError
-        product_id = list(product_info.keys())[index]
+        product_id = sorted(product_info, key=sort_key)[index]
     except (ValueError, IndexError):
         print('Exiting.')
         exit(0)
